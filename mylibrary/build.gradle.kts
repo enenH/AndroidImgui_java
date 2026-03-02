@@ -17,7 +17,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        minSdk = 29
+        minSdk = 31
         consumerProguardFiles("consumer-rules.pro")
         buildConfigField("String", "VERSION_NAME", "\"1.0\"")
     }
@@ -68,8 +68,6 @@ android.libraryVariants.all {
 
             PrintStream(pgConf.outputStream()).use {
                 it.println("-keep class com.example.mylibrary.Main")
-                it.println("{ *; }")
-                it.println("-keep class com.example.mylibrary.MyPackageInfo")
                 it.println("{ *; }")
             }
 

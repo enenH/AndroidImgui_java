@@ -2,7 +2,6 @@ package com.example.mylibrary;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.graphics.PixelFormat;
@@ -18,31 +17,48 @@ import android.view.SurfaceControl;
 import android.view.WindowManager;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 
-public class Main extends ContextWrapper implements Callable<Object[]> {
-
-    public static final int PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY = 1 << 20;
-
-    public static final int PRIVATE_FLAG_TRUSTED_OVERLAY = 0x20000000;
-    public static final int SHELL_UID = 2000;
+@SuppressLint({"SoonBlockedPrivateApi", "BlockedPrivateApi"})
+public class Main {
     public static final String TAG = "日志";
     public static Context context = null;
-
-    public static WindowManager windowManager = null;
-    public static Map<Surface, SurfaceControl> surfaceControlSurfaceMap = new HashMap<>();
-    private final Map<Integer, SurfaceControl> mirrorSurfaceMap = new HashMap<>();
-
     public static Handler handler;
 
-    public static Surface firstSurface = null;
-    public static int firstSurfaceWidth = 0;
-    public static int firstSurfaceHeight = 0;
+    public static WindowManager windowManager = null;
+    public static Map<Surface, SurfaceControl> surfaceControlSurfaceMap = new ConcurrentHashMap<>();
+    public static Map<Integer, SurfaceControl> mirrorSurfaceMap = new ConcurrentHashMap<>();
+
+    // 缓存的反射方法，避免每次调用重复查找
+    private static Method sMirrorSurfaceMethod;
+    private static Method sSetFlagsMethod;
+    private static Method sSetLayerStackMethod;
+    private static Method sReparentMethod;
+    private static Method sSetTrustedOverlayMethod;
+
+    static {
+        try {
+            Class<?> builderClass = Class.forName("android.view.SurfaceControl$Builder");
+            sSetFlagsMethod = builderClass.getDeclaredMethod("setFlags", int.class);
+            sSetFlagsMethod.setAccessible(true);
+            sMirrorSurfaceMethod = SurfaceControl.class.getDeclaredMethod("mirrorSurface", SurfaceControl.class);
+            sMirrorSurfaceMethod.setAccessible(true);
+            Class<?> txClass = SurfaceControl.Transaction.class;
+            sSetLayerStackMethod = txClass.getDeclaredMethod("setLayerStack", SurfaceControl.class, int.class);
+            sSetLayerStackMethod.setAccessible(true);
+            sReparentMethod = txClass.getDeclaredMethod("reparent", SurfaceControl.class, SurfaceControl.class);
+            sReparentMethod.setAccessible(true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                sSetTrustedOverlayMethod = txClass.getDeclaredMethod("setTrustedOverlay", SurfaceControl.class, boolean.class);
+                sSetTrustedOverlayMethod.setAccessible(true);
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     public static Context getSystemContext() {
         try {
@@ -56,7 +72,6 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
         }
     }
 
-    @SuppressLint("PrivateApi")
     public static Context createContext() {
         Resources systemRes = Resources.getSystem();
         Field systemResField = null;
@@ -90,50 +105,34 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
         return context;
     }
 
-    public Main() {
-        super(null);
 
+    public static void main(String[] args) {
+        Looper.prepareMainLooper();
         context = createContext();
-        attachBaseContext(context);
         windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         handler = new Handler(Looper.getMainLooper());
+        // Looper.loop();
+    }
 
+    public static void registerDisplayListener(Surface surface, int width, int height) {
         var displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
         displayManager.registerDisplayListener(new DisplayManager.DisplayListener() {
             @Override
             public void onDisplayAdded(int displayId) {
-                Log.d(TAG, "onDisplayAdded: " + displayId);
-                if (firstSurface == null)
-                    return;
-
                 try {
-                    Method mirrorSurfaceMethod = SurfaceControl.class
-                            .getDeclaredMethod("mirrorSurface", SurfaceControl.class);
-                    mirrorSurfaceMethod.setAccessible(true);
-                    SurfaceControl mirrorSurface = (SurfaceControl) mirrorSurfaceMethod.invoke(null, surfaceControlSurfaceMap.get(firstSurface));
+                    SurfaceControl mirrorSurface = (SurfaceControl) sMirrorSurfaceMethod.invoke(null, surfaceControlSurfaceMap.get(surface));
                     SurfaceControl.Builder b = new SurfaceControl.Builder();
                     b.setName(UUID.randomUUID().toString());
                     b.setFormat(PixelFormat.RGBA_8888);
-                    Class<?> builderClass = Class.forName("android.view.SurfaceControl$Builder");
-                    Method setFlagsMethod = builderClass.getDeclaredMethod("setFlags", int.class);
-                    setFlagsMethod.setAccessible(true);
-                    setFlagsMethod.invoke(b, 0);
-                    b.setBufferSize(firstSurfaceWidth, firstSurfaceWidth);
+                    sSetFlagsMethod.invoke(b, 0);
+                    b.setBufferSize(width, height);
                     var mirroredSurfaceControl = b.build();
                     SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
-                    //public Transaction setLayerStack(SurfaceControl sc, int layerStack)
-                    Method setLayerStackMethod = SurfaceControl.Transaction.class
-                            .getDeclaredMethod("setLayerStack", SurfaceControl.class, int.class);
-                    setLayerStackMethod.setAccessible(true);
-                    setLayerStackMethod.invoke(transaction, mirroredSurfaceControl, displayId);
+                    sSetLayerStackMethod.invoke(transaction, mirroredSurfaceControl, displayId);
                     transaction.setLayer(mirroredSurfaceControl, Integer.MAX_VALUE);
                     transaction.apply();
-
-                    setLayerStackMethod.invoke(transaction, mirrorSurface, displayId);
-                    Method reparentMethod = SurfaceControl.Transaction.class
-                            .getDeclaredMethod("reparent", SurfaceControl.class, SurfaceControl.class);
-                    reparentMethod.setAccessible(true);
-                    reparentMethod.invoke(transaction, mirrorSurface, mirroredSurfaceControl);
+                    sSetLayerStackMethod.invoke(transaction, mirrorSurface, displayId);
+                    sReparentMethod.invoke(transaction, mirrorSurface, mirroredSurfaceControl);
                     transaction.apply();
                     transaction.close();
                     mirrorSurfaceMap.put(displayId, mirrorSurface);
@@ -144,34 +143,14 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
 
             @Override
             public void onDisplayRemoved(int displayId) {
-                Log.d(TAG, "onDisplayRemoved: " + displayId);
+                SurfaceControl mirrorSurface = mirrorSurfaceMap.remove(displayId);
+                if (mirrorSurface != null) mirrorSurface.release();
             }
 
             @Override
             public void onDisplayChanged(int displayId) {
-                Log.d(TAG, "onDisplayChanged: " + displayId);
-                if (firstSurface == null) return;
-                try {
-                    SurfaceControl mirrorSurface = mirrorSurfaceMap.remove(displayId);
-                    if (mirrorSurface != null) {
-                        mirrorSurface.release();
-                    }
-                } catch (Exception e) {
-                    Log.d(TAG, "remove mirror error " + e);
-                }
             }
         }, handler);
-    }
-
-    public static void main(String[] args) {
-        Looper.prepareMainLooper();
-        try {
-            new Main();
-        } catch (Exception e) {
-            Log.e(TAG, "Error in IPCMain", e);
-        }
-        // Main thread event loop
-        // Looper.loop();
     }
 
     public static void loop() {
@@ -185,34 +164,16 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
         return new int[]{size.x, size.y, display.getRotation()};
     }
 
+    @SuppressLint({"SoonBlockedPrivateApi", "BlockedPrivateApi"})
     public static Surface createNativeWindow(int width, int height, boolean isHide, boolean isSecure) {
         SurfaceControl.Builder builder = new SurfaceControl.Builder();
         builder.setName(UUID.randomUUID().toString());
         builder.setFormat(PixelFormat.RGBA_8888);
-        if (Build.VERSION.SDK_INT <= 30) {
-            try {
-
-                Class<?> builderClass = Class.forName("android.view.SurfaceControl$Builder");
-                Method setMetadataMethod = builderClass.getDeclaredMethod("setMetadata", int.class, int.class);
-                setMetadataMethod.setAccessible(true);
-                if (isHide && !isSecure)
-                    setMetadataMethod.invoke(builder, 2, 441731);
-                Method setFlagsMethod = builderClass.getDeclaredMethod("setFlags", int.class);
-                setFlagsMethod.setAccessible(true);
-                setFlagsMethod.invoke(builder, isSecure ? 0x80 : 0x0);
-            } catch (ClassNotFoundException | IllegalAccessException |
-                     NoSuchMethodException | InvocationTargetException ignored) {
-            }
-        } else {
-            try {
-
-                Class<?> builderClass = Class.forName("android.view.SurfaceControl$Builder");
-                Method setFlagsMethod = builderClass.getDeclaredMethod("setFlags", int.class);
-                setFlagsMethod.setAccessible(true);
-                setFlagsMethod.invoke(builder, isSecure ? 0x80 : isHide ? 0x40 : 0x0);
-            } catch (ClassNotFoundException | IllegalAccessException |
-                     NoSuchMethodException | InvocationTargetException ignored) {
-            }
+        try {
+            int flags = isSecure ? 0x80 : (isHide ? 0x40 : 0x0);
+            sSetFlagsMethod.invoke(builder, flags);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
         }
         int rotation = getDisplayInfo()[2];
         if (rotation == 1 || rotation == 3) {
@@ -223,15 +184,10 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
         var surfaceControl = builder.build();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
-            //transaction.setLayer(surfaceControl, Integer.MAX_VALUE);
-            //public Transaction setTrustedOverlay(SurfaceControl sc, boolean isTrustedOverlay) {
             try {
-                Method setTrustedOverlayMethod = SurfaceControl.Transaction.class
-                        .getDeclaredMethod("setTrustedOverlay", SurfaceControl.class, boolean.class);
-                setTrustedOverlayMethod.setAccessible(true);
-                setTrustedOverlayMethod.invoke(transaction, surfaceControl, true);
-            } catch (Exception e) {
-                System.out.println("setTrustedOverlayMethod error " + e);
+                sSetTrustedOverlayMethod.invoke(transaction, surfaceControl, true);
+            } catch (ReflectiveOperationException e) {
+                throw new RuntimeException(e);
             }
             transaction.apply();
             transaction.close();
@@ -239,35 +195,34 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
 
         var surface = new Surface(surfaceControl);
         surfaceControlSurfaceMap.put(surface, surfaceControl);
-        if (firstSurface == null) {
-            firstSurface = surface;
-            firstSurfaceHeight = height;
-            firstSurfaceWidth = width;
-        }
         return surface;
     }
 
     public static void destroyNativeWindow(Surface surface) {
-        if (surface == null) {
-            return;
-        }
+        if (surface == null) return;
+        SurfaceControl sc = surfaceControlSurfaceMap.remove(surface);
         surface.release();
-        SurfaceControl surfaceControl = surfaceControlSurfaceMap.get(surface);
-        if (surfaceControl == null) {
-            return;
-        }
-        surfaceControl.release();
+        if (sc != null) sc.release();
     }
 
-    @Override
-    public Object[] call() throws Exception {
-        return new Object[0];
+    public static void destroyAll() {
+        // 先销毁镜像层（依赖于原始 SurfaceControl）
+        for (SurfaceControl mirrorSc : mirrorSurfaceMap.values()) {
+            if (mirrorSc != null) mirrorSc.release();
+        }
+        mirrorSurfaceMap.clear();
+
+        // 再销毁原始 Surface 和对应的 SurfaceControl
+        for (Map.Entry<Surface, SurfaceControl> entry : surfaceControlSurfaceMap.entrySet()) {
+            Surface surface = entry.getKey();
+            SurfaceControl sc = entry.getValue();
+            if (surface != null) surface.release();
+            if (sc != null) sc.release();
+        }
+        surfaceControlSurfaceMap.clear();
     }
 
     static class ResourcesWrapper extends Resources {
-
-        @SuppressLint("PrivateApi")
-        @SuppressWarnings("JavaReflectionMemberAccess")
         public ResourcesWrapper(Resources res) throws ReflectiveOperationException {
             super(res.getAssets(), res.getDisplayMetrics(), res.getConfiguration());
             Method getImpl = Resources.class.getDeclaredMethod("getImpl");
