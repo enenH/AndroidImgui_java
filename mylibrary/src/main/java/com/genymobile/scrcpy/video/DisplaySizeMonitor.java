@@ -50,7 +50,7 @@ public class DisplaySizeMonitor {
             handlerThread = new HandlerThread("DisplayListener");
             handlerThread.start();
             Handler handler = new Handler(handlerThread.getLooper());
-            displayListenerHandle = ServiceManager.getDisplayManager().registerDisplayListener(eventDisplayId -> {
+            /*displayListenerHandle = ServiceManager.getDisplayManager().registerDisplayListener(eventDisplayId -> {
                 if (Ln.isEnabled(Ln.Level.VERBOSE)) {
                     Ln.v("DisplaySizeMonitor: onDisplayChanged(" + eventDisplayId + ")");
                 }
@@ -58,7 +58,7 @@ public class DisplaySizeMonitor {
                 if (eventDisplayId == displayId) {
                     checkDisplaySizeChanged();
                 }
-            }, handler);
+            }, handler);*/
         } else {
             displayWindowListener = new DisplayWindowListener() {
                 @Override

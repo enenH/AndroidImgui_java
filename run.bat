@@ -1,0 +1,2 @@
+adb push D:\WorkDir\AndroidStudio2\AndroidImgui_java\mylibrary\src\main\assets\main.jar /data/local/tmp
+adb shell su -c "app_process64 -Djava.class.path=/data/local/tmp/main.jar /system/bin com.example.mylibrary.Main"

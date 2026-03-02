@@ -29,6 +29,11 @@ public final class DisplayManager {
     public static final long EVENT_FLAG_DISPLAY_CHANGED = 1L << 2;
 
     public interface DisplayListener {
+
+        void onDisplayAdded(int displayId);
+
+        void onDisplayRemoved(int displayId);
+
         /**
          * Called whenever the properties of a logical {@link android.view.Display},
          * such as size and density, have changed.
@@ -203,6 +208,14 @@ public final class DisplayManager {
                         if ("onDisplayChanged".equals(method.getName())) {
                             listener.onDisplayChanged((int) args[0]);
                         }
+                        else if ("onDisplayAdded".equals(method.getName())) {
+                            listener.onDisplayAdded((int) args[0]);
+                        }
+                        else if ("onDisplayRemoved".equals(method.getName())) {
+                            listener.onDisplayRemoved((int) args[0]);
+                        }
+                        else
+
                         if ("toString".equals(method.getName())) {
                             return "DisplayListener";
                         }

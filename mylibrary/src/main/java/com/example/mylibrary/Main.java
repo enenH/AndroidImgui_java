@@ -1,24 +1,32 @@
 package com.example.mylibrary;
 
+import static android.hardware.display.DisplayManager.EVENT_TYPE_DISPLAY_ADDED;
+import static android.hardware.display.DisplayManager.EVENT_TYPE_DISPLAY_CHANGED;
+import static android.hardware.display.DisplayManager.EVENT_TYPE_DISPLAY_REMOVED;
+
+
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.util.Log;
-import android.util.SizeF;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceControl;
@@ -27,15 +35,13 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.WindowManager;
 
-import com.genymobile.scrcpy.device.ConfigurationException;
 import com.genymobile.scrcpy.control.Controller;
-import com.genymobile.scrcpy.device.Device;
 import com.genymobile.scrcpy.FakeContext;
 import com.genymobile.scrcpy.Options;
-import com.genymobile.scrcpy.device.DisplayInfo;
 import com.genymobile.scrcpy.device.Position;
 import com.genymobile.scrcpy.Workarounds;
 import com.genymobile.scrcpy.wrappers.ClipboardManager;
+
 import com.genymobile.scrcpy.wrappers.ServiceManager;
 
 
@@ -45,10 +51,10 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Executor;
 
 import eu.chainfire.libcfsurface.SurfaceHost;
 
@@ -65,6 +71,10 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
     public static Map<Surface, SurfaceControl> surfaceControlSurfaceMap = new HashMap<>();
 
     public static Handler handler;
+
+    public static Surface firstSurface = null;
+    public static int firstSurfaceWidth = 0;
+    public static int firstSurfaceHeight = 0;
 
     public static Context getSystemContext() {
         try {
@@ -112,12 +122,101 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
         return context;
     }
 
+    private final Map<Integer, SurfaceControl> mirrorSurfaceMap = new HashMap<>();
+
     public Main() {
         super(null);
+
+
         context = createContext();
         attachBaseContext(context);
         windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         handler = new Handler(Looper.getMainLooper());
+        //controller = new Controller(null, null, new Options());
+       /* injectTouchEvent ( 0, 0, 100, 100);
+         injectTouchEvent( 1, 0, 100, 100);*/
+
+
+       /* Log.d(TAG, "日志:  pid=" + android.os.Process.myPid() + " uid=" + android.os.Process.myUid());
+        try {
+            Method preloadFont = Typeface.class.getMethod("loadPreinstalledSystemFontMap");
+            preloadFont.invoke(null);
+        } catch (Exception e) {
+            Log.d(TAG, "AIDLService: onCreate | Err: " + e.getMessage());
+        }
+        var surface = createNativeWindow(500, 500, false, false);
+        var canvas = surface.lockCanvas(null);
+        Paint paint = new Paint();
+        paint.setColor(Color.RED);
+        paint.setTextSize(50);
+        canvas.drawText("Hello World", 100, 100, paint);
+        surface.unlockCanvasAndPost(canvas);*/
+
+        var displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        displayManager.registerDisplayListener(new DisplayManager.DisplayListener() {
+            @TargetApi(Build.VERSION_CODES.Q)
+            @Override
+            public void onDisplayAdded(int displayId) {
+                Log.d(TAG, "onDisplayAdded: " + displayId);
+                if (firstSurface == null)
+                    return;
+
+                try {
+                    Method mirrorSurfaceMethod = SurfaceControl.class
+                            .getDeclaredMethod("mirrorSurface", SurfaceControl.class);
+                    mirrorSurfaceMethod.setAccessible(true);
+                    SurfaceControl mirrorSurface = (SurfaceControl) mirrorSurfaceMethod.invoke(null, surfaceControlSurfaceMap.get(firstSurface));
+                    SurfaceControl.Builder b = new SurfaceControl.Builder();
+                    b.setName(UUID.randomUUID().toString());
+                    b.setFormat(PixelFormat.RGBA_8888);
+                    Class<?> builderClass = Class.forName("android.view.SurfaceControl$Builder");
+                    Method setFlagsMethod = builderClass.getDeclaredMethod("setFlags", int.class);
+                    setFlagsMethod.setAccessible(true);
+                    setFlagsMethod.invoke(b, 0);
+                    b.setBufferSize(firstSurfaceWidth, firstSurfaceWidth);
+                    var mirroredSurfaceControl = b.build();
+                    SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
+                    //public Transaction setLayerStack(SurfaceControl sc, int layerStack)
+                    Method setLayerStackMethod = SurfaceControl.Transaction.class
+                            .getDeclaredMethod("setLayerStack", SurfaceControl.class, int.class);
+                    setLayerStackMethod.setAccessible(true);
+                    setLayerStackMethod.invoke(transaction, mirroredSurfaceControl, displayId);
+                    transaction.setLayer( mirroredSurfaceControl, Integer.MAX_VALUE);
+                    transaction.apply();
+
+                    setLayerStackMethod.invoke(transaction, mirrorSurface, displayId);
+                    Method reparentMethod = SurfaceControl.Transaction.class
+                            .getDeclaredMethod("reparent", SurfaceControl.class, SurfaceControl.class);
+                    reparentMethod.setAccessible(true);
+                    reparentMethod.invoke(transaction, mirrorSurface, mirroredSurfaceControl);
+                    transaction.apply();
+                    transaction.close();
+                    mirrorSurfaceMap.put(displayId, mirrorSurface);
+                } catch (Exception e) {
+                    Log.d(TAG, "mirrorSurfaceMethod error " + e);
+                }
+            }
+
+            @Override
+            public void onDisplayRemoved(int displayId) {
+                Log.d(TAG, "onDisplayRemoved: " + displayId);
+            }
+
+            @TargetApi(Build.VERSION_CODES.Q)
+            @Override
+            public void onDisplayChanged(int displayId) {
+                Log.d(TAG, "onDisplayChanged: " + displayId);
+                if (firstSurface == null) return;
+                try {
+                    SurfaceControl mirrorSurface = mirrorSurfaceMap.remove(displayId);
+                    if (mirrorSurface != null) {
+                        mirrorSurface.release();
+                    }
+                } catch (Exception e) {
+                    Log.d(TAG, "remove mirror error " + e);
+                }
+            }
+        }, handler);
     }
 
     public static void main(String[] args) {
@@ -128,7 +227,7 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
             Log.e("IPC", "Error in IPCMain", e);
         }
         // Main thread event loop
-        // Log.d(TAG, "main:  end");
+        // Looper.loop();
     }
 
     public static Controller controller = null;
@@ -138,12 +237,19 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
     }
 
     public static void injectTouchEvent(int action, long pointerId, int x, int y) {
+        return;
+       /* Log.d( TAG, "injectTouchEvent: 111");
         if (controller == null) {
-            Workarounds.apply();
-            controller = new Controller(null, null, new Options());
+             Log.d( TAG, "injectTouchEvent: 222");
+
         }
-        var size =  ServiceManager.getDisplayManager().getDisplayInfo(0).getSize();
-        controller.injectTouch(action, pointerId, new Position(x, y, size.getWidth(), size.getHeight()), 1.f, 0, 0);
+        Log.d( TAG, "injectTouchEvent: 333");
+        if ( controller == null) {
+            Log .e(TAG, "injectTouchEvent: controller is null");
+        }*/
+        /*var size = ServiceManager.getDisplayManager().getDisplayInfo(0).getSize();
+        Log.d( TAG, "injectTouchEvent: x=" + x + " y=" + y + " w=" + size.getWidth() + " h=" + size.getHeight());
+        controller.injectTouch(action, pointerId, new Position(x, y, size.getWidth(), size.getHeight()), 1.f, 0, 0);*/
     }
 
     public static String getClipboardText() {
@@ -302,14 +408,13 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
                      NoSuchMethodException | InvocationTargetException ignored) {
             }
         }
-        int rotation = ServiceManager.getWindowManager().getRotation();
+        int rotation = getDisplayInfo()[2];
         if (rotation == 1 || rotation == 3) {
             builder.setBufferSize(width, height);
         } else {
             builder.setBufferSize(height, width);
         }
         var surfaceControl = builder.build();
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
             //transaction.setLayer(surfaceControl, Integer.MAX_VALUE);
@@ -328,6 +433,11 @@ public class Main extends ContextWrapper implements Callable<Object[]> {
 
         var surface = new Surface(surfaceControl);
         surfaceControlSurfaceMap.put(surface, surfaceControl);
+        if (firstSurface == null) {
+            firstSurface = surface;
+            firstSurfaceHeight = height;
+            firstSurfaceWidth = width;
+        }
         return surface;
     }
 
