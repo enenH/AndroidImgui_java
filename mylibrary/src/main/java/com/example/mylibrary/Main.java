@@ -18,6 +18,7 @@ import android.view.WindowManager;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,8 +30,8 @@ public class Main {
     public static Handler handler;
 
     public static WindowManager windowManager = null;
-    public static Map<Surface, SurfaceControl> surfaceControlSurfaceMap = new ConcurrentHashMap<>();
-    public static Map<Integer, SurfaceControl> mirrorSurfaceMap = new ConcurrentHashMap<>();
+    public static Map<Surface, SurfaceControl> surfaceControlSurfaceMap = new HashMap<>();
+    public static Map<Integer, SurfaceControl> mirrorSurfaceMap = new HashMap<>();
 
     // 缓存的反射方法，避免每次调用重复查找
     private static Method sMirrorSurfaceMethod;
@@ -111,7 +112,6 @@ public class Main {
         context = createContext();
         windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         handler = new Handler(Looper.getMainLooper());
-        // Looper.loop();
     }
 
     public static void registerDisplayListener(Surface surface, int width, int height) {
@@ -144,7 +144,17 @@ public class Main {
             @Override
             public void onDisplayRemoved(int displayId) {
                 SurfaceControl mirrorSurface = mirrorSurfaceMap.remove(displayId);
-                if (mirrorSurface != null) mirrorSurface.release();
+                if (mirrorSurface != null) {
+                    SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+                    try {
+                        sReparentMethod.invoke(t, mirrorSurface, (Object) null);
+                    } catch (ReflectiveOperationException e) {
+                        Log.d(TAG, "reparent mirror error " + e);
+                    }
+                    t.apply();
+                    t.close();
+                    mirrorSurface.release();
+                }
             }
 
             @Override
@@ -202,17 +212,59 @@ public class Main {
         if (surface == null) return;
         SurfaceControl sc = surfaceControlSurfaceMap.remove(surface);
         surface.release();
-        if (sc != null) sc.release();
+        if (sc != null) {
+            SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+            try {
+                sReparentMethod.invoke(t, sc, (Object) null);
+            } catch (ReflectiveOperationException e) {
+                Log.d(TAG, "reparent error " + e);
+            }
+            t.apply();
+            t.close();
+            sc.release();
+        }
+    }
+
+    public static void destroyNativeWindowOnMainThread(Surface surface) {
+        handler.post(() -> destroyNativeWindow(surface));
     }
 
     public static void destroyAll() {
-        // 先销毁镜像层（依赖于原始 SurfaceControl）
+        SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+
+        // 先从父节点移除镜像层（依赖于原始 SurfaceControl）
+        for (SurfaceControl mirrorSc : mirrorSurfaceMap.values()) {
+            if (mirrorSc != null) {
+                try {
+                    sReparentMethod.invoke(t, mirrorSc, (Object) null);
+                } catch (ReflectiveOperationException e) {
+                    Log.d(TAG, "reparent mirror error " + e);
+                }
+            }
+        }
+
+        // 再从父节点移除原始 SurfaceControl
+        for (Map.Entry<Surface, SurfaceControl> entry : surfaceControlSurfaceMap.entrySet()) {
+            SurfaceControl sc = entry.getValue();
+            if (sc != null) {
+                try {
+                    sReparentMethod.invoke(t, sc, (Object) null);
+                } catch (ReflectiveOperationException e) {
+                    Log.d(TAG, "reparent error " + e);
+                }
+            }
+        }
+
+        t.apply();
+        t.close();
+
+        // 释放镜像层
         for (SurfaceControl mirrorSc : mirrorSurfaceMap.values()) {
             if (mirrorSc != null) mirrorSc.release();
         }
         mirrorSurfaceMap.clear();
 
-        // 再销毁原始 Surface 和对应的 SurfaceControl
+        // 释放原始 Surface 和 SurfaceControl
         for (Map.Entry<Surface, SurfaceControl> entry : surfaceControlSurfaceMap.entrySet()) {
             Surface surface = entry.getKey();
             SurfaceControl sc = entry.getValue();
@@ -220,6 +272,10 @@ public class Main {
             if (sc != null) sc.release();
         }
         surfaceControlSurfaceMap.clear();
+    }
+
+    public static void destroyAllOnMainThread() {
+        handler.post(Main::destroyAll);
     }
 
     static class ResourcesWrapper extends Resources {
