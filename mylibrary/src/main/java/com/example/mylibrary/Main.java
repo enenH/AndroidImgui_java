@@ -29,7 +29,9 @@ public class Main {
     public static Context context = null;
     public static Handler handler;
 
+    private static DisplayManager.DisplayListener sDisplayListener;
     public static WindowManager windowManager = null;
+    private static DisplayManager displayManager;
     public static Map<Surface, SurfaceControl> surfaceControlSurfaceMap = new HashMap<>();
     public static Map<Integer, SurfaceControl> mirrorSurfaceMap = new HashMap<>();
 
@@ -111,12 +113,12 @@ public class Main {
         Looper.prepareMainLooper();
         context = createContext();
         windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
         handler = new Handler(Looper.getMainLooper());
     }
 
     public static void registerDisplayListener(Surface surface, int width, int height) {
-        var displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
-        displayManager.registerDisplayListener(new DisplayManager.DisplayListener() {
+        sDisplayListener = new DisplayManager.DisplayListener() {
             @Override
             public void onDisplayAdded(int displayId) {
                 try {
@@ -160,7 +162,15 @@ public class Main {
             @Override
             public void onDisplayChanged(int displayId) {
             }
-        }, handler);
+        };
+        displayManager.registerDisplayListener(sDisplayListener, handler);
+    }
+
+    public static void unregisterDisplayListener() {
+        if (sDisplayListener != null) {
+            displayManager.unregisterDisplayListener(sDisplayListener);
+            sDisplayListener = null;
+        }
     }
 
     public static void loop() {
@@ -223,10 +233,7 @@ public class Main {
             t.close();
             sc.release();
         }
-    }
-
-    public static void destroyNativeWindowOnMainThread(Surface surface) {
-        handler.post(() -> destroyNativeWindow(surface));
+        Log.d(TAG, "destroyNativeWindow: ");
     }
 
     public static void destroyAll() {
@@ -272,10 +279,7 @@ public class Main {
             if (sc != null) sc.release();
         }
         surfaceControlSurfaceMap.clear();
-    }
-
-    public static void destroyAllOnMainThread() {
-        handler.post(Main::destroyAll);
+        Log.d(TAG, "destroyAll: ");
     }
 
     static class ResourcesWrapper extends Resources {
